@@ -1,117 +1,169 @@
-// index.js
-const { Client, GatewayIntentBits, Partials } = require('discord.js');
-const express = require('express');
+const { Client, GatewayIntentBits, AuditLogEvent, ChannelType } = require("discord.js");
+const express = require("express");
 
-// ===== ENV DEĞİŞKENLERİ =====
-const GUILD_ID = process.env.GUILD_ID;
-const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID;
-const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
-const PORT = process.env.PORT || 3000;
-
-// ===== CLIENT =====
 const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildBans,
-    GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildVoiceStates
-  ],
-  partials: [Partials.Channel, Partials.GuildMember]
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers]
 });
 
-// ===== WEB SERVER =====
+const OWNER_ID = "1467082213890719837";
+const LOG_CHANNEL = "1479089590177501264";
+
 const app = express();
-app.get('/', (req, res) => res.send('Bot çalışıyor 😎'));
-app.listen(PORT, () => console.log(`Web server ${PORT} portunda açık`));
 
-// ===== BOT READY =====
-client.once('ready', () => {
+app.get("/", (req, res) => {
+  res.send("Bot çalışıyor");
+});
+
+app.listen(8080, () => {
+  console.log("Web server çalışıyor");
+});
+
+client.once("clientReady", () => {
   console.log(`Bot açıldı: ${client.user.tag}`);
-  client.user.setStatus('online');
-
-  const guild = client.guilds.cache.get(GUILD_ID);
-  if (!guild) return console.log('Sunucu bulunamadı!');
-  
-  client.logChannel = guild.channels.cache.get(LOG_CHANNEL_ID);
 });
 
-// ===== GUARD =====
-let backupChannels = {};
-let backupRoles = {};
-let channelRestoreCount = {};
-let roleRestoreCount = {};
-const LIMIT = 5;
-const WINDOW = 5 * 60 * 1000;
+async function punish(guild, userId, reason) {
 
-// Kanalları ve rolleri yedekle
-client.on('ready', () => {
-  const guild = client.guilds.cache.get(GUILD_ID);
+  if (userId === OWNER_ID) return;
 
-  guild.channels.cache.forEach(ch => {
-    backupChannels[ch.id] = {
-      name: ch.name,
-      type: ch.type,
-      parentId: ch.parentId,
-      permissions: ch.permissionOverwrites.cache.map(p => ({
-        id: p.id,
-        allow: p.allow.bitfield,
-        deny: p.deny.bitfield
-      }))
-    };
-  });
+  const member = await guild.members.fetch(userId).catch(() => null);
+  if (!member) return;
 
-  guild.roles.cache.forEach(r => {
-    backupRoles[r.id] = {
-      name: r.name,
-      color: r.color,
-      permissions: r.permissions.bitfield,
-      hoist: r.hoist,
-      mentionable: r.mentionable
-    };
-  });
-});
+  try {
 
-// Kanal silme
-client.on('channelDelete', async channel => {
-  const guild = channel.guild;
-  const userId = 'unknown';
-  channelRestoreCount[userId] = (channelRestoreCount[userId] || 0) + 1;
-  if (channelRestoreCount[userId] > LIMIT) return;
+    await member.roles.set([]);
 
-  setTimeout(() => channelRestoreCount[userId]--, WINDOW);
+    const log = guild.channels.cache.get(LOG_CHANNEL);
 
-  const data = backupChannels[channel.id];
-  if (data) {
-    guild.channels.create({
-      name: data.name,
-      type: data.type,
-      parent: data.parentId
-    });
-    if (client.logChannel) client.logChannel.send(`🟢 Kanal geri oluşturuldu: ${data.name}`);
+    if (log) {
+      log.send(`🚨 GUARD
+
+Kullanıcı: <@${userId}>
+Sebep: ${reason}
+
+Tüm rolleri alındı.`);
+    }
+
+  } catch (err) {
+    console.log(err);
   }
-});
+}
 
-// Rol silme
-client.on('roleDelete', async role => {
-  const guild = role.guild;
-  const userId = 'unknown';
-  roleRestoreCount[userId] = (roleRestoreCount[userId] || 0) + 1;
-  if (roleRestoreCount[userId] > LIMIT) return;
+client.on("channelCreate", async (channel) => {
 
-  setTimeout(() => roleRestoreCount[userId]--, WINDOW);
+  setTimeout(async () => {
 
-  const data = backupRoles[role.id];
-  if (data) {
-    guild.roles.create({
-      name: data.name,
-      color: data.color,
-      permissions: data.permissions,
-      hoist: data.hoist,
-      mentionable: data.mentionable
+    const logs = await channel.guild.fetchAuditLogs({
+      type: AuditLogEvent.ChannelCreate,
+      limit: 1
     });
-    if (client.logChannel) client.logChannel.send(`🟢 Rol geri oluşturuldu: ${data.name}`);
-  }
+
+    const entry = logs.entries.first();
+    if (!entry) return;
+
+    punish(channel.guild, entry.executor.id, "İzinsiz kanal açtı");
+
+  }, 1000);
+
 });
 
-// ===== BOT LOGIN =====
-client.login(DISCORD_TOKEN);
+client.on("channelDelete", async (channel) => {
+
+  setTimeout(async () => {
+
+    const logs = await channel.guild.fetchAuditLogs({
+      type: AuditLogEvent.ChannelDelete,
+      limit: 1
+    });
+
+    const entry = logs.entries.first();
+    if (!entry) return;
+
+    punish(channel.guild, entry.executor.id, "Kanal sildi");
+
+    try {
+
+      if (channel.type === ChannelType.GuildText) {
+
+        await channel.guild.channels.create({
+          name: channel.name,
+          type: ChannelType.GuildText,
+          parent: channel.parentId,
+          topic: channel.topic,
+          nsfw: channel.nsfw,
+          rateLimitPerUser: channel.rateLimitPerUser
+        });
+
+      }
+
+      if (channel.type === ChannelType.GuildVoice) {
+
+        await channel.guild.channels.create({
+          name: channel.name,
+          type: ChannelType.GuildVoice,
+          parent: channel.parentId,
+          bitrate: channel.bitrate,
+          userLimit: channel.userLimit
+        });
+
+      }
+
+    } catch (err) {
+      console.log(err);
+    }
+
+  }, 1000);
+
+});
+
+client.on("roleCreate", async (role) => {
+
+  setTimeout(async () => {
+
+    const logs = await role.guild.fetchAuditLogs({
+      type: AuditLogEvent.RoleCreate,
+      limit: 1
+    });
+
+    const entry = logs.entries.first();
+    if (!entry) return;
+
+    punish(role.guild, entry.executor.id, "Rol oluşturdu");
+
+  }, 1000);
+
+});
+
+client.on("roleDelete", async (role) => {
+
+  setTimeout(async () => {
+
+    const logs = await role.guild.fetchAuditLogs({
+      type: AuditLogEvent.RoleDelete,
+      limit: 1
+    });
+
+    const entry = logs.entries.first();
+    if (!entry) return;
+
+    punish(role.guild, entry.executor.id, "Rol sildi");
+
+    try {
+
+      await role.guild.roles.create({
+        name: role.name,
+        color: role.color,
+        hoist: role.hoist,
+        permissions: role.permissions,
+        mentionable: role.mentionable
+      });
+
+    } catch (err) {
+      console.log(err);
+    }
+
+  }, 1000);
+
+});
+
+client.login(process.env.TOKEN);
