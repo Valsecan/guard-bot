@@ -1,16 +1,16 @@
 {
-  "name": "guard-bot",
+  "name": "discord-guard-bot",
   "version": "1.0.0",
-  "description": "Discord guard bot",
+  "description": "Discord guard bot with auto restore",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
+  "engines": {
+    "node": "22.x"
+  },
   "dependencies": {
     "discord.js": "^14.13.0",
     "express": "^4.18.2"
-  },
-  "engines": {
-    "node": "22.x"
   }
 }
