@@ -108,4 +108,3 @@ client.on('roleDelete', async role => {
 });
 
 client.login(process.env.DISCORD_TOKEN);
-client.login("MTQ3OTA3MDEzNjAxMzk0NjkzMQ.GUszFE.qCNNcy0EHiyR45ZgqG-NznduMaLZt6aEIXY9NU"); // buraya Discord Developer Portal'dan aldığın bot tokeni yaz
