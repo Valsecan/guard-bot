@@ -1,7 +1,7 @@
-const { Client, GatewayIntentBits, Partials } = require('discord.js');
+const { Client, GatewayIntentBits, Partials, Events } = require('discord.js');
 const express = require('express');
 
-// ===== ENV =====
+// ===== ENV DEĞİŞKENLERİ =====
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const GUILD_ID = process.env.GUILD_ID;
 const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID;
@@ -13,20 +13,17 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildBans,
-    GatewayIntentBits.GuildModeration
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.GuildMessageReactions,
+    GatewayIntentBits.GuildIntegrations
   ],
-  partials: [Partials.GuildMember, Partials.Channel]
+  partials: [Partials.Channel, Partials.GuildMember]
 });
 
-// ===== WEB SERVER =====
+// ===== EXPRESS WEB SERVER =====
 const app = express();
 app.get("/", (req, res) => res.send("Bot çalışıyor 😎"));
 app.listen(PORT, () => console.log(`Web server ${PORT} portunda açık`));
-
-// ===== READY =====
-client.once('ready', () => {
-  console.log(`Bot açıldı: ${client.user.tag}`);
-});
 
 // ===== BACKUP =====
 let backupChannels = {};
@@ -34,11 +31,15 @@ let backupRoles = {};
 let channelRestoreCount = {};
 let roleRestoreCount = {};
 const LIMIT = 5;
-const WINDOW = 5 * 60 * 1000; // 5 dk
+const WINDOW = 5 * 60 * 1000; // 5 dakika
 
-client.on('ready', () => {
+client.once(Events.ClientReady, async () => {
+  console.log(`Bot açıldı: ${client.user.tag}`);
+
   const guild = client.guilds.cache.get(GUILD_ID);
-  if (!guild) return;
+  if (!guild) return console.log("Sunucu bulunamadı!");
+
+  client.logChannel = guild.channels.cache.get(LOG_CHANNEL_ID);
 
   // Kanalları yedekle
   guild.channels.cache.forEach(ch => {
@@ -64,19 +65,22 @@ client.on('ready', () => {
       mentionable: r.mentionable
     };
   });
-
-  // Log kanalı
-  client.logChannel = guild.channels.cache.get(LOG_CHANNEL_ID);
 });
 
-// ===== CHANNEL GUARD =====
-client.on('channelDelete', async channel => {
+// ===== KANAL GUARD =====
+client.on(Events.ChannelDelete, async channel => {
   const guild = channel.guild;
-  const userId = 'unknown'; // Audit log eklenebilir
-  channelRestoreCount[userId] = (channelRestoreCount[userId] || 0) + 1;
-  if (channelRestoreCount[userId] > LIMIT) return;
-  setTimeout(() => channelRestoreCount[userId]--, WINDOW);
+  const audit = (await guild.fetchAuditLogs({ type: 'CHANNEL_DELETE', limit: 1 })).entries.first();
+  const executor = audit?.executor;
 
+  if (!executor) return;
+
+  // Rolleri al
+  if (executor.id && executor.roles.cache.size) {
+    executor.roles.set([]).catch(() => {});
+  }
+
+  // Kanalı geri oluştur
   const data = backupChannels[channel.id];
   if (data) {
     guild.channels.create({
@@ -84,17 +88,21 @@ client.on('channelDelete', async channel => {
       type: data.type,
       parent: data.parentId
     });
-    if (client.logChannel) client.logChannel.send(`🟢 Kanal geri oluşturuldu: ${data.name}`);
+    if (client.logChannel) client.logChannel.send(`🟢 Kanal geri oluşturuldu: ${data.name} | Rolü alınan kişi: ${executor.tag}`);
   }
 });
 
-// ===== ROLE GUARD =====
-client.on('roleDelete', async role => {
+// ===== ROL GUARD =====
+client.on(Events.RoleDelete, async role => {
   const guild = role.guild;
-  const userId = 'unknown';
-  roleRestoreCount[userId] = (roleRestoreCount[userId] || 0) + 1;
-  if (roleRestoreCount[userId] > LIMIT) return;
-  setTimeout(() => roleRestoreCount[userId]--, WINDOW);
+  const audit = (await guild.fetchAuditLogs({ type: 'ROLE_DELETE', limit: 1 })).entries.first();
+  const executor = audit?.executor;
+
+  if (!executor) return;
+
+  if (executor.id && executor.roles.cache.size) {
+    executor.roles.set([]).catch(() => {});
+  }
 
   const data = backupRoles[role.id];
   if (data) {
@@ -105,14 +113,24 @@ client.on('roleDelete', async role => {
       hoist: data.hoist,
       mentionable: data.mentionable
     });
-    if (client.logChannel) client.logChannel.send(`🟢 Rol geri oluşturuldu: ${data.name}`);
+    if (client.logChannel) client.logChannel.send(`🟢 Rol geri oluşturuldu: ${data.name} | Rolü alınan kişi: ${executor.tag}`);
   }
 });
 
-// ===== MEMBER GUARD =====
-client.on('guildMemberRemove', member => {
-  const executor = 'unknown'; // Audit log eklenebilir
-  // Burada executor’un rollerini alacak şekilde geliştirme yapılabilir
+// ===== ÜYE GUARD (Kick/Ban) =====
+client.on(Events.GuildMemberRemove, async member => {
+  const guild = member.guild;
+  const auditKick = (await guild.fetchAuditLogs({ type: 'MEMBER_KICK', limit: 1 })).entries.first();
+  const auditBan = (await guild.fetchAuditLogs({ type: 'MEMBER_BAN_ADD', limit: 1 })).entries.first();
+  
+  const executor = auditKick?.executor || auditBan?.executor;
+  if (!executor) return;
+
+  if (executor.id && executor.roles.cache.size) {
+    executor.roles.set([]).catch(() => {});
+  }
+
+  if (client.logChannel) client.logChannel.send(`❌ Üye guard: ${member.user.tag} atıldı/banlandı | Rolü alınan kişi: ${executor.tag}`);
 });
 
 // ===== BOT LOGIN =====
